@@ -6,6 +6,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mdouchement/ergo/tcp"
 	"github.com/mdouchement/logger"
@@ -133,7 +134,18 @@ func check(l logger.Logger, addr string, cfg *tls.Config) error {
 	}
 	defer sc.Close()
 
-	l.Infof(tlsinfo(sc.ConnectionState()))
+	cs := sc.ConnectionState()
+	l.Info("TLS details:")
+	l.Info("ServerName:     ", cs.ServerName)
+	l.Info("Version:        ", version(cs.Version))
+	l.Info("CipherSuite:    ", tls.CipherSuiteName(cs.CipherSuite))
+	l.Info("")
+	l.Info("Address:        ", sc.RemoteAddr().String())
+	l.Info("CommonName:     ", cs.PeerCertificates[0].Subject.CommonName)
+	l.Info("Issuer:         ", cs.PeerCertificates[0].Issuer.CommonName)
+	l.Info("NotBefore:      ", cs.PeerCertificates[0].NotBefore.In(time.Local).String())
+	l.Info("NotAfter:       ", cs.PeerCertificates[0].NotAfter.In(time.Local).String())
+	l.Info("")
 	return nil
 }
 
