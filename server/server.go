@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -8,8 +9,8 @@ import (
 	"regexp"
 
 	"github.com/ghodss/yaml"
-	"github.com/mdouchement/ergo/host"
 	"github.com/mdouchement/ergo/http"
+	"github.com/mdouchement/ergo/resolver"
 	"github.com/mdouchement/ergo/tcp"
 	"github.com/mdouchement/logger"
 	"github.com/pkg/errors"
@@ -18,7 +19,7 @@ import (
 )
 
 type configuration struct {
-	*host.PatternMatcher
+	*resolver.NameResolver
 	Address       string   `json:"addr"`
 	Authorization string   `json:"authorization"`
 	Logger        string   `json:"logger"`
@@ -77,12 +78,9 @@ func Command() *cobra.Command {
 					logr.SetLevel(l)
 				}
 
-				config.PatternMatcher = host.NewPatternMatcher(log)
-				for line, pattern := range config.DenyList {
-					err = config.PatternMatcher.Add(pattern, struct{}{}, line+1)
-					if err != nil {
-						return errors.Wrapf(err, "could not build denylist %s", cfg)
-					}
+				config.NameResolver, err = resolver.New(config.DenyList)
+				if err != nil {
+					return errors.Wrapf(err, "could not build name resolver %s", cfg)
 				}
 			}
 
@@ -141,29 +139,23 @@ func Command() *cobra.Command {
 					// Deny check
 					//
 
+					var ip net.IP
 					{
-						lookups := []string{header.Domain()}
-						if ips, err := net.LookupHost(lookups[0]); err == nil {
-							lookups = append(lookups, ips...)
+						_, ip, err = config.Resolve(context.Background(), header.Domain())
+						if err != nil {
+							const payload = "HTTP/1.1 403 Forbidden\r\n\r\n"
+							log.Info(header.String())
+							log.Warn(err)
+							c.Write([]byte(payload))
+							return
 						}
-
-						for _, lookup := range lookups {
-							if rejected, reason, _ := config.PatternMatcher.Eval(lookup); rejected {
-								const payload = "HTTP/1.1 403 Forbidden\r\n\r\n"
-								log.Info(header.String())
-								log.Warnf("rejected by rule: %s", reason)
-								c.Write([]byte(payload))
-								return
-							}
-						}
-
 					}
 
 					//
 					// TCP pipeline
 					//
 
-					pipe, err := tcp.NewPipeTCP(c, header.Host())
+					pipe, err := tcp.NewPipeTCP(c, net.JoinHostPort(ip.String(), header.Port()))
 					if err != nil {
 						if !tcp.IsIgnorableError(err) {
 							log.WithError(err).Error("failed to establish pipe")

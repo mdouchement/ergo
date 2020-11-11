@@ -1,7 +1,12 @@
 # Ergo
 
 Ergo is an HTTP/HTTPS proxy that supports `Proxy-Authorization` authentication.
-Ergo is able to deny destinations according its configuration.
+
+Features:
+- HTTP/HTTPS
+- Authentication
+- Deny list using [urlfilter](https://github.com/AdguardTeam/urlfilter) package
+- Cache domain name resolution results
 
 ## How does it work
 

@@ -32,7 +32,7 @@ func Parse(r Reader) (h Header, err error) {
 	var ok bool
 	h.Method, h.RequestURI, h.Proto, ok = h.parseRequestLine(s)
 	if !ok {
-		return h, errors.Errorf("malformed HTTP request", s)
+		return h, errors.Errorf("malformed HTTP request %s", s)
 	}
 
 	//
@@ -98,6 +98,15 @@ func (h *Header) Host() string {
 		host += ":80"
 	}
 	return host
+}
+
+func (h *Header) Port() string {
+	host := h.Header.Get("Host")
+	idx := strings.Index(host, ":")
+	if idx < 1 {
+		return "80"
+	}
+	return host[idx+1:]
 }
 
 func (h *Header) String() string {
