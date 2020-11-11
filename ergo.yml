@@ -2,9 +2,10 @@ addr: localhost:4242
 authorization: user:password
 logger: debug
 denylist:
-  - "127.*" # reject all IPs or domains that matchs this rule (e.g. localhost is rejected)
-  - "::1"
-  - "192.168.*"
-  - "10.*"
-  - "172.*"
-  - "*google.com"
+  # https://github.com/AdguardTeam/urlfilter for documentation
+  - "$127.*" # reject all IPs or domains that matchs this rule (e.g. localhost is rejected)
+  - "$::1"
+  - "$192.168.*"
+  - "$10.*"
+  - "$172.*"
+  - "||*google.com"
