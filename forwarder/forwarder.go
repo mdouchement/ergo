@@ -1,9 +1,13 @@
 package forwarder
 
 import (
+	"bufio"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -13,19 +17,29 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/blake2b"
 )
+
+type controler struct {
+	logger      logger.Logger
+	tls         *tls.Config
+	skip        bool
+	listen      string
+	address     string
+	fingerprint string
+}
 
 // Command is used to forward incoming TCP connections over TLS.
 func Command() *cobra.Command {
-	var listen string
+	ctrl := &controler{}
 
 	c := &cobra.Command{
 		Use:   "tls-forwarder",
 		Short: "Forwards TCP connections to the Ergo server through TLS",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			logr := logrus.New()
-			logr.SetFormatter(&logger.LogrusTextFormatter{
+			log := logrus.New()
+			log.SetFormatter(&logger.LogrusTextFormatter{
 				DisableColors:   false,
 				ForceColors:     true,
 				ForceFormatting: true,
@@ -33,23 +47,23 @@ func Command() *cobra.Command {
 				FullTimestamp:   true,
 				TimestampFormat: "2006-01-02 15:04:05",
 			})
-			log := logger.WrapLogrus(logr)
+			ctrl.logger = logger.WrapLogrus(log)
 
-			addr := args[0]
-			cfg := &tls.Config{
-				ServerName: trimport(addr),
+			ctrl.address = args[0]
+			ctrl.tls = &tls.Config{
+				ServerName: trimport(ctrl.address),
 			}
 
 			//
 
-			if err := check(log, addr, cfg); err != nil {
+			if err := ctrl.check(); err != nil {
 				return err
 			}
 
 			//
 
-			log.Info("Listening on ", listen)
-			l, err := net.Listen("tcp", listen)
+			ctrl.logger.Info("Listening on ", ctrl.listen)
+			l, err := net.Listen("tcp", ctrl.listen)
 			if err != nil {
 				return errors.Wrap(err, "could not listen")
 			}
@@ -58,7 +72,7 @@ func Command() *cobra.Command {
 				c, err := l.Accept()
 				if err != nil {
 					if !tcp.IsIgnorableError(err) {
-						log.WithError(err).Error("could not accept")
+						ctrl.logger.WithError(err).Error("could not accept")
 					}
 					continue
 				}
@@ -71,7 +85,7 @@ func Command() *cobra.Command {
 					// TCP connection
 					//
 
-					rc, err := net.Dial("tcp", addr)
+					rc, err := net.Dial("tcp", ctrl.address)
 					if err != nil {
 						log.WithError(err).Error("could not connect to Ergo proxy")
 						return
@@ -83,12 +97,16 @@ func Command() *cobra.Command {
 					// TLS handshake
 					//
 
-					sc := tls.Client(rc, cfg)
+					sc := tls.Client(rc, ctrl.tls)
 					if err = sc.Handshake(); err != nil {
-						log.WithError(err).Error("could not perform TLS on Ergo proxy")
+						ctrl.logger.WithError(err).Error("could not perform TLS on Ergo proxy")
 						return
 					}
 					defer sc.Close()
+
+					if !ctrl.valid(sc) {
+						ctrl.logger.Fatal("The TLS fingerprint has changed")
+					}
 
 					//
 					// TCP pipeline
@@ -97,56 +115,72 @@ func Command() *cobra.Command {
 					pipe, err := tcp.NewPipe(c, sc)
 					if err != nil {
 						if !tcp.IsIgnorableError(err) {
-							log.WithError(err).Error("failed to establish pipe")
+							ctrl.logger.WithError(err).Error("failed to establish pipe")
 						}
 						return
 					}
 					defer pipe.Close()
 
-					log.WithFields(logger.M{
+					ctrl.logger.WithFields(logger.M{
 						"local":  fmt.Sprintf("%s/%s", pipe.LocalConn().LocalAddr(), pipe.LocalConn().RemoteAddr()),
 						"remote": fmt.Sprintf("%s/%s", pipe.RemoteConn().LocalAddr(), pipe.RemoteConn().RemoteAddr()),
 					}).Info(tlsinfo(sc.ConnectionState()))
 
 					err = pipe.Relay()
 					if err != nil && !tcp.IsIgnorableError(err) {
-						log.WithError(err).Error("pipe failure")
+						ctrl.logger.WithError(err).Error("pipe failure")
 					}
 				}()
 			}
 		},
 	}
-	c.Flags().StringVarP(&listen, "binding", "b", "localhost:8080", "Forwarder listening address")
+	c.Flags().StringVarP(&ctrl.listen, "binding", "b", "localhost:8080", "Forwarder listening address")
+	c.Flags().BoolVarP(&ctrl.skip, "skip", "", false, "Skip human validation for certficate details")
 
 	return c
 }
 
-func check(l logger.Logger, addr string, cfg *tls.Config) error {
-	c, err := net.Dial("tcp", addr)
+func (ctrl *controler) check() error {
+	c, err := net.Dial("tcp", ctrl.address)
 	if err != nil {
 		return errors.Wrap(err, "could not connect to Ergo proxy")
 	}
 	defer c.Close()
 
-	sc := tls.Client(c, cfg)
+	sc := tls.Client(c, ctrl.tls)
 	if err = sc.Handshake(); err != nil {
 		return errors.Wrap(err, "could not perform TLS on Ergo proxy")
 	}
 	defer sc.Close()
 
 	cs := sc.ConnectionState()
-	l.Info("TLS details:")
-	l.Info("ServerName:     ", cs.ServerName)
-	l.Info("Version:        ", version(cs.Version))
-	l.Info("CipherSuite:    ", tls.CipherSuiteName(cs.CipherSuite))
-	l.Info("")
-	l.Info("Address:        ", sc.RemoteAddr().String())
-	l.Info("CommonName:     ", cs.PeerCertificates[0].Subject.CommonName)
-	l.Info("Issuer:         ", cs.PeerCertificates[0].Issuer.CommonName)
-	l.Info("NotBefore:      ", cs.PeerCertificates[0].NotBefore.In(time.Local).String())
-	l.Info("NotAfter:       ", cs.PeerCertificates[0].NotAfter.In(time.Local).String())
-	l.Info("")
+	ctrl.logger.Info("TLS details:")
+	ctrl.logger.Info("ServerName:     ", cs.ServerName)
+	ctrl.logger.Info("Version:        ", version(cs.Version))
+	ctrl.logger.Info("CipherSuite:    ", tls.CipherSuiteName(cs.CipherSuite))
+	ctrl.logger.Info("")
+	ctrl.logger.Info("Address:        ", sc.RemoteAddr().String())
+	ctrl.logger.Info("CommonName:     ", cs.PeerCertificates[0].Subject.CommonName)
+	ctrl.logger.Info("Issuer:         ", cs.PeerCertificates[0].Issuer.CommonName)
+	ctrl.logger.Info("NotBefore:      ", cs.PeerCertificates[0].NotBefore.In(time.Local).String())
+	ctrl.logger.Info("NotAfter:       ", cs.PeerCertificates[0].NotAfter.In(time.Local).String())
+	ctrl.logger.Info("")
+
+	if !ctrl.skip {
+		pause()
+	}
+
+	ctrl.fingerprint = fingerprint(cs.PeerCertificates[0])
 	return nil
+}
+
+func (ctrl *controler) valid(sc *tls.Conn) bool {
+	return ctrl.fingerprint == fingerprint(sc.ConnectionState().PeerCertificates[0])
+}
+
+func fingerprint(cert *x509.Certificate) string {
+	sum := blake2b.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func trimport(addr string) string {
@@ -181,4 +215,10 @@ func version(v uint16) string {
 	default:
 		return fmt.Sprintf("%d", v)
 	}
+}
+
+func pause() {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Press enter to continue")
+	reader.ReadString('\n')
 }

@@ -10,4 +10,5 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.5.0
 	github.com/spf13/cobra v1.0.0
+	golang.org/x/crypto v0.0.0-20200709230013-948cd5f35899
 )
