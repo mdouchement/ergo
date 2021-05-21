@@ -3,7 +3,6 @@ package forwarder
 import (
 	"bufio"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -105,6 +104,8 @@ func Command() *cobra.Command {
 					defer sc.Close()
 
 					if !ctrl.valid(sc) {
+						ctrl.logger.Errorf("Fingerprint OK: '%s'", ctrl.fingerprint)
+						ctrl.logger.Errorf("Fingerprint KO: '%s'", fingerprint(sc.ConnectionState()))
 						ctrl.logger.Fatal("The TLS fingerprint has changed")
 					}
 
@@ -170,17 +171,23 @@ func (ctrl *controler) check() error {
 		pause()
 	}
 
-	ctrl.fingerprint = fingerprint(cs.PeerCertificates[0])
+	ctrl.fingerprint = fingerprint(cs)
+	ctrl.logger.Infof("Fingerprint: '%s'", ctrl.fingerprint)
 	return nil
 }
 
 func (ctrl *controler) valid(sc *tls.Conn) bool {
-	return ctrl.fingerprint == fingerprint(sc.ConnectionState().PeerCertificates[0])
+	return ctrl.fingerprint == fingerprint(sc.ConnectionState())
 }
 
-func fingerprint(cert *x509.Certificate) string {
-	sum := blake2b.Sum256(cert.Raw)
-	return hex.EncodeToString(sum[:])
+func fingerprint(cs tls.ConnectionState) string {
+	fingerprint := blake2b.Sum256(cs.PeerCertificates[0].Raw)
+	return fmt.Sprintf(
+		"%s.%s.%s",
+		version(cs.Version),
+		tls.CipherSuiteName(cs.CipherSuite),
+		hex.EncodeToString(fingerprint[:]),
+	)
 }
 
 func trimport(addr string) string {
