@@ -18,6 +18,8 @@ func Relay(local, remote net.Conn) error {
 	var wg sync.WaitGroup
 	delay := time.Second
 
+	// remote = Dumper(remote, true)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

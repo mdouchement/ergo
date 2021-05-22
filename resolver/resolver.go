@@ -106,7 +106,7 @@ func (r *NameResolver) Resolve(ctx context.Context, name string) (context.Contex
 
 	//
 
-	r.cache.SetWithTTL(name, addr.IP, 1, 12*time.Hour)
+	r.cache.SetWithTTL(name, addr.IP, 1, CacheTTL)
 	return ctx, addr.IP, nil
 }
 
