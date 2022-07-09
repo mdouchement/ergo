@@ -8,7 +8,6 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/ghodss/yaml"
 	"github.com/mdouchement/ergo/http"
 	"github.com/mdouchement/ergo/resolver"
 	"github.com/mdouchement/ergo/tcp"
@@ -16,14 +15,15 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 type configuration struct {
 	*resolver.NameResolver
-	Address       string   `json:"addr"`
-	Authorization string   `json:"authorization"`
-	Logger        string   `json:"logger"`
-	DenyList      []string `json:"denylist"`
+	Address       string   `yaml:"addr"`
+	Authorization string   `yaml:"authorization"`
+	Logger        string   `yaml:"logger"`
+	DenyList      []string `yaml:"denylist"`
 }
 
 // Command is used to launch Ergo proxy server.
