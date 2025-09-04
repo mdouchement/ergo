@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"regexp"
@@ -13,7 +12,6 @@ import (
 	"github.com/mdouchement/ergo/tcp"
 	"github.com/mdouchement/logger"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +20,7 @@ type configuration struct {
 	*resolver.NameResolver
 	Address       string   `yaml:"addr"`
 	Authorization string   `yaml:"authorization"`
+	NameServer    string   `yaml:"force_nameserver"`
 	Logger        string   `yaml:"logger"`
 	DenyList      []string `yaml:"denylist"`
 }
@@ -39,16 +38,15 @@ func Command() *cobra.Command {
 				cfg = "ergo.yml"
 			}
 
-			logr := logrus.New()
-			logr.SetFormatter(&logger.LogrusTextFormatter{
+			lopts := &logger.SlogTextOption{
 				DisableColors:   false,
 				ForceColors:     true,
 				ForceFormatting: true,
 				PrefixRE:        regexp.MustCompile(`^(\[.*?\])\s`),
 				FullTimestamp:   true,
 				TimestampFormat: "2006-01-02 15:04:05",
-			})
-			log := logger.WrapLogrus(logr)
+			}
+			log := logger.WrapSlogHandler(logger.NewSlogTextHandler(os.Stdout, lopts))
 
 			//
 
@@ -56,29 +54,26 @@ func Command() *cobra.Command {
 			{
 
 				log.Infof("Reading configuration from %s", cfg)
-				payload, err := ioutil.ReadFile(cfg)
+				payload, err := os.ReadFile(cfg)
 				if err != nil {
-					if err != nil {
-						return errors.Wrapf(err, "could not read configuration file %s", cfg)
-					}
+					return errors.Wrapf(err, "could not read configuration file %s", cfg)
 				}
 
 				err = yaml.Unmarshal(payload, &config)
 				if err != nil {
-					if err != nil {
-						return errors.Wrapf(err, "could not parse configuration file %s", cfg)
-					}
+					return errors.Wrapf(err, "could not parse configuration file %s", cfg)
 				}
 
 				if config.Logger != "" {
-					l, err := logrus.ParseLevel(config.Logger)
+					lopts.Level, err = logger.ParseSlogLevel(config.Logger)
 					if err != nil {
 						return errors.Wrapf(err, "could not parse logger level %s", cfg)
 					}
-					logr.SetLevel(l)
+
+					log = logger.WrapSlogHandler(logger.NewSlogTextHandler(os.Stdout, lopts))
 				}
 
-				config.NameResolver, err = resolver.New(config.DenyList)
+				config.NameResolver, err = resolver.New(config.NameServer, config.DenyList)
 				if err != nil {
 					return errors.Wrapf(err, "could not build name resolver %s", cfg)
 				}
@@ -87,6 +82,16 @@ func Command() *cobra.Command {
 			//
 			//
 			//
+
+			if config.Authorization != "" {
+				log.Info("Authorization enabled")
+			} else {
+				log.Info("Authorization disabled")
+			}
+
+			if config.NameServer != "" {
+				log.Info("Name server forced to", config.NameServer)
+			}
 
 			log.Info("Listening on ", config.Address)
 			l, err := net.Listen("tcp", config.Address)

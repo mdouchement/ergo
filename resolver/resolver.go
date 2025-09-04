@@ -9,7 +9,7 @@ import (
 
 	"github.com/AdguardTeam/urlfilter"
 	"github.com/AdguardTeam/urlfilter/filterlist"
-	"github.com/dgraph-io/ristretto"
+	"github.com/dgraph-io/ristretto/v2"
 	"github.com/pkg/errors"
 )
 
@@ -22,25 +22,26 @@ var ErrHostRejected = errors.New("rejected host")
 // A NameResolver is used for name resolution.
 type NameResolver struct {
 	mu            sync.Mutex
+	resolver      *net.Resolver
 	rejects       *urlfilter.DNSEngine
 	rejectedByIPs map[string]string
 	overrides     map[string]net.IP
-	cache         *ristretto.Cache
+	cache         *ristretto.Cache[string, net.IP]
 }
 
 // New return a new NameResolver.
-func New(rejects []string) (*NameResolver, error) {
-	rs, err := filterlist.NewRuleStorage([]filterlist.RuleList{
-		&filterlist.StringRuleList{
+func New(nameserver string, rejects []string) (*NameResolver, error) {
+	rs, err := filterlist.NewRuleStorage([]filterlist.Interface{
+		filterlist.NewString(&filterlist.StringConfig{
 			ID:        42,
 			RulesText: strings.Join(rejects, "\n"),
-		},
+		}),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	cache, err := ristretto.NewCache(&ristretto.Config{
+	cache, err := ristretto.NewCache(&ristretto.Config[string, net.IP]{
 		NumCounters: 50_000,
 		MaxCost:     5000,
 		BufferItems: 64,
@@ -49,7 +50,19 @@ func New(rejects []string) (*NameResolver, error) {
 		return nil, err
 	}
 
+	resolver := new(net.Resolver)
+	if nameserver != "" {
+		resolver.PreferGo = true
+		resolver.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{
+				Timeout: 500 * time.Millisecond,
+			}
+			return d.DialContext(ctx, network, nameserver)
+		}
+	}
+
 	return &NameResolver{
+		resolver:      resolver,
 		rejects:       urlfilter.NewDNSEngine(rs),
 		rejectedByIPs: map[string]string{},
 		overrides:     map[string]net.IP{},
@@ -71,7 +84,7 @@ func (r *NameResolver) OverrideHost(host string, ip string) error {
 // Resolve returns the ip for the given domain name.
 func (r *NameResolver) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
 	if ip, ok := r.cache.Get(name); ok {
-		return ctx, ip.(net.IP), nil
+		return ctx, ip, nil
 	}
 
 	if ip, ok := r.isRejectedByIP(name); ok {
@@ -91,9 +104,20 @@ func (r *NameResolver) Resolve(ctx context.Context, name string) (context.Contex
 		return ctx, ip, nil
 	}
 
-	addr, err := net.ResolveIPAddr("ip", name)
+	addrs, err := r.resolver.LookupIPAddr(context.Background(), name)
 	if err != nil {
 		return ctx, nil, errors.Wrapf(err, "[resolve] %s", name)
+	}
+	if len(addrs) == 0 {
+		return ctx, nil, errors.Errorf("[resolve] no IP for %s", name)
+	}
+
+	addr := addrs[0]
+	for _, a := range addrs {
+		if a.IP.To4() != nil {
+			addr = a // Prefer IPv4
+			break
+		}
 	}
 
 	if rules, ok := r.rejects.Match(addr.IP.String()); ok {
@@ -107,6 +131,7 @@ func (r *NameResolver) Resolve(ctx context.Context, name string) (context.Contex
 	//
 
 	r.cache.SetWithTTL(name, addr.IP, 1, CacheTTL)
+	r.cache.Wait()
 	return ctx, addr.IP, nil
 }
 

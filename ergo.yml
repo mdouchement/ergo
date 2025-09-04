@@ -1,6 +1,16 @@
-addr: localhost:4242
-authorization: user:password
 logger: debug
+
+# addr is the address to listen to.
+addr: localhost:4242
+
+# authorization is the crredentials used to authenticate requests.
+# Comment the line below to disable auth.
+authorization: user:password
+
+# force_nameserver is an option to force the Domain Name Server instead the host one.
+# force_nameserver: 1.1.1.1:53
+
+# denylist is th elist of patterns thqt the proxy should not enable access.
 denylist:
   # https://github.com/AdguardTeam/urlfilter for documentation
   - "$127.*" # reject all IPs or domains that matchs this rule (e.g. localhost is rejected)
